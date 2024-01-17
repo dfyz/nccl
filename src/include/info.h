@@ -46,6 +46,8 @@ struct ncclInfo {
   // Algorithm details
   int chunkSteps;
   int sliceSteps;
+  // Only for mixed-precision ReduceScatter
+  ncclDataType_t inputtype;
   // Computed later
   ncclDevRedOpFull opFull;
   int algorithm;
@@ -68,13 +70,13 @@ inline ncclResult_t ncclInfoSetDerived(struct ncclInfo* info, int nRanks) {
     info->count = info->nBytes;
     info->datatype = ncclInt8;
   }
-  if (info->coll == ncclFuncAllGather || info->coll == ncclFuncReduceScatter) info->nBytes *= nRanks; // count is per rank
+  if (info->coll == ncclFuncAllGather || info->coll == ncclFuncReduceScatter || info->coll == ncclFuncMixedPrecisionReduceScatter) info->nBytes *= nRanks; // count is per rank
 
   /* compute buffer size for NVLS buffer registration */
   if (info->coll == ncclFuncAllGather) {
     info->sendbuffSize = info->count * ncclTypeSize(info->datatype);
     info->recvbuffSize = info->sendbuffSize * nRanks;
-  } else if (info->coll == ncclFuncReduceScatter) {
+  } else if (info->coll == ncclFuncReduceScatter || info->coll == ncclFuncMixedPrecisionReduceScatter) {
     info->recvbuffSize = info->count * ncclTypeSize(info->datatype);
     info->sendbuffSize = info->recvbuffSize * nRanks;
   } else {
@@ -93,6 +95,8 @@ struct ncclTaskColl {
   ncclDataType_t datatype;
   ncclDevRedOpFull op;
   int chunkSteps, sliceSteps;
+  // Only for mixed-precision ReduceScatter
+  ncclDataType_t inputtype;
 };
 struct ncclTaskP2p {
   ncclTaskP2p *next;

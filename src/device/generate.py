@@ -6,6 +6,7 @@ import sys
 all_colls =  ["Broadcast","Reduce","AllGather","ReduceScatter","AllReduce","SendRecv"]
 all_redops = ["Sum","Prod","MinMax","PreMulSum","SumPostDiv"]
 all_tys =    ["i8","u8","i32","u32","i64","u64","f16","f32","f64","bf16"]
+mprs_tys =   [("f32","bf16")] # datatype first, inputtype second
 all_protos = ["LL","LL128","SIMPLE"]
 all_algos =  ["TREE","RING","COLLNET_DIRECT","COLLNET_CHAIN","NVLS","NVLS_TREE"]
 
@@ -57,7 +58,14 @@ make ONLY_FUNCS="AllReduce Sum f32 RING LL128"
 
 # Paste all non-None arguments together with `sep`.
 def paste(sep, *args):
-  return sep.join(x for x in args if x is not None)
+  flattened = []
+  for arg in args:
+    if isinstance(arg, tuple):
+      flattened.extend(arg)
+    elif arg is not None:
+      assert isinstance(arg, str), f"Unexpected argument: {arg}"
+      flattened.append(arg)
+  return sep.join(flattened)
 
 func_pattern = sys.argv[2:3]
 if func_pattern and func_pattern[0]:
@@ -74,21 +82,23 @@ else:
 ################################################################################
 
 algos_of_coll = {
-  "AllGather":     ["RING","NVLS"],
-  "AllReduce":     all_algos,
-  "Broadcast":     ["RING"],
-  "Reduce":        ["RING"],
-  "ReduceScatter": ["RING","NVLS"],
-  "SendRecv":      [None]
+  "AllGather":                   ["RING","NVLS"],
+  "AllReduce":                   all_algos,
+  "Broadcast":                   ["RING"],
+  "MixedPrecisionReduceScatter": ["RING"],
+  "Reduce":                      ["RING"],
+  "ReduceScatter":               ["RING","NVLS"],
+  "SendRecv":                    [None]
 }
 
 coll_camel_to_lower = {
-  "AllGather":     "all_gather",
-  "AllReduce":     "all_reduce",
-  "Broadcast":     "broadcast",
-  "Reduce":        "reduce",
-  "ReduceScatter": "reduce_scatter",
-  "SendRecv":      "sendrecv"
+  "AllGather":                   "all_gather",
+  "AllReduce":                   "all_reduce",
+  "Broadcast":                   "broadcast",
+  "MixedPrecisionReduceScatter": "mixed_precision_reduce_scatter",
+  "Reduce":                      "reduce",
+  "ReduceScatter":               "reduce_scatter",
+  "SendRecv":                    "sendrecv"
 }
 coll_lower_to_camel = {coll_camel_to_lower[x]: x for x in coll_camel_to_lower}
 
@@ -103,6 +113,11 @@ def required_cuda(coll, redop, ty, algo, proto):
   if coll in ("SendRecv", "Generic", "Nop"): return (cudart, arch)
 
   if proto!="SIMPLE" and algo not in ("RING","TREE"): return None
+
+  if coll == "MixedPrecisionReduceScatter":
+    datatype, inputtype = ty
+    if redop=="SumPostDiv" and (datatype not in ("i","u") or inputtype not in ("i","u")): return None
+    if datatype=="bf16" or inputtype=="bf16": cudart = max(cudart, 11000)
 
   if coll in ("AllReduce","Reduce","ReduceScatter"):
     if redop=="SumPostDiv" and ty[0] not in ("i","u"): return None
@@ -163,6 +178,12 @@ def enumerate_func_rows():
         for algo in algos:
           for proto in all_protos:
             yield (coll, redop, ty, algo, proto)
+  mprs = "MixedPrecisionReduceScatter"
+  for redop in all_redops:
+    for algo in algos_of_coll[mprs]:
+      for proto in all_protos:
+        for ty in mprs_tys:
+          yield (mprs, redop, ty, algo, proto)
 
 ################################################################################
 
@@ -363,6 +384,16 @@ ty_to_cxx = {
   "bf16": "__nv_bfloat16"
 }
 
+def format_ty(ty, fmt_args):
+  if isinstance(ty, tuple):
+    datatype, inputtype = ty
+    fmt_args["ty"] = "{ty_cxx}, {inputty_cxx}".format(ty_cxx=ty_to_cxx[datatype], inputty_cxx=ty_to_cxx[inputtype])
+    fmt_args["define_suffix"] = "MixedPrecision"
+  else:
+    assert isinstance(ty, str) or ty is None, f"Unexpected type: {ty}"
+    fmt_args["ty"] = ty_to_cxx[ty]
+    fmt_args["define_suffix"] = ""
+
 # Generate each <gensrc>/<impl>.cu:
 for name in name_to_funcs.keys():
   (coll, fns) = name_to_funcs[name]
@@ -382,10 +413,18 @@ for name in name_to_funcs.keys():
       cudart, arch = required_cuda(*kfn)
       if (cudart, arch) != (0, 0):
         out("#if CUDART_VERSION >= %d && __CUDA_ARCH__ >= %d\n" % (cudart, arch))
+      fmt_args = {
+        "sym": sym,
+        "coll": coll,
+        "redop_cxx": redop_to_cxx[redop],
+        "algo": algo or "RING",
+        "proto": proto or "SIMPLE",
+        "fn_id": fn_id,
+      }
+      format_ty(ty, fmt_args)
       out(
-        "DEFINE_ncclDevKernel({sym}, ncclFunc{coll}, {redop_cxx}, {ty_cxx}, NCCL_ALGO_{algo}, NCCL_PROTO_{proto}, {fn_id})\n"
-        .format(sym=sym, coll=coll, redop_cxx=redop_to_cxx[redop], ty_cxx=ty_to_cxx[ty],
-                algo=(algo or "RING"), proto=(proto or "SIMPLE"), fn_id=fn_id)
+        "DEFINE_ncclDevKernel{define_suffix}({sym}, ncclFunc{coll}, {redop_cxx}, {ty}, NCCL_ALGO_{algo}, NCCL_PROTO_{proto}, {fn_id})\n"
+        .format(**fmt_args)
       )
       if (cudart, arch) != (0, 0):
         out("#endif\n")
@@ -396,10 +435,17 @@ for name in name_to_funcs.keys():
       cudart, arch = required_cuda(*fn)
       if (cudart, arch) != (0, 0):
         out("#if CUDART_VERSION >= %d && __CUDA_ARCH__ >= %d\n" % (cudart, arch))
+      fmt_args = {
+        "sym": sym,
+        "coll": coll,
+        "redop_cxx": redop_to_cxx[redop],
+        "algo": algo or "RING",
+        "proto": proto or "SIMPLE",
+      }
+      format_ty(ty, fmt_args)
       out(
-        "DEFINE_ncclDevFunc({sym}, ncclFunc{coll}, {redop_cxx}, {ty_cxx}, NCCL_ALGO_{algo}, NCCL_PROTO_{proto})\n"
-        .format(sym=sym, coll=coll, redop_cxx=redop_to_cxx[redop], ty_cxx=ty_to_cxx[ty],
-                algo=(algo or "RING"), proto=(proto or "SIMPLE"))
+        "DEFINE_ncclDevFunc{define_suffix}({sym}, ncclFunc{coll}, {redop_cxx}, {ty}, NCCL_ALGO_{algo}, NCCL_PROTO_{proto})\n"
+        .format(**fmt_args)
       )
       if (cudart, arch) != (0, 0):
         out("#endif\n")

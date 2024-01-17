@@ -409,7 +409,7 @@ inline bool ncclNvlsSupported(int devRedOp, int type) {
 }
 
 // `ncclDevFuncIndex()` needs to be in sync with "all_functions()" in "src/device/generate.py"
-inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) {
+inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto, bool returnRow = false) {
   #if defined(__CUDA_BF16_TYPES_EXIST__)
   constexpr int NumTypes = ncclNumTypes;
   #else
@@ -455,9 +455,21 @@ inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) 
   row += ncclNumDevRedOps*NumTypes*(/*NumAlgos=*/2)*NCCL_NUM_PROTOCOLS;
 
 have_row:
-  return ncclDevFuncRowToId[row];
+  return returnRow ? row : ncclDevFuncRowToId[row];
 }
 
 inline int ncclDevFuncId_P2p() { return ncclDevFuncRowToId[0]; }
+
+inline ncclResult_t ncclDevFuncId_MixedPrecisionReduceScatter(int devRedOp, int acctype, int inputtype, int algo, int proto, int* funcId) {
+  // Our rows starts right after the last regular row
+  int idStart = 1 + ncclDevFuncId(ncclFuncReduceScatter, ncclDevSumPostDiv, ncclBfloat16, NCCL_ALGO_NVLS, NCCL_PROTO_SIMPLE, true /*returnRow*/);
+  // This logic needs to be in sync with `mprs_tys` in `generate.py`.
+  if (acctype != ncclFloat32 || inputtype != ncclBfloat16) {
+    return ncclInternalError;
+  }
+  // We only support a single combination of datatype+inputtype+algo, so they are currently not used in the row calculation
+  *funcId = ncclDevFuncRowToId[idStart + devRedOp*NCCL_NUM_PROTOCOLS + proto];
+  return ncclSuccess;
+}
 
 #endif

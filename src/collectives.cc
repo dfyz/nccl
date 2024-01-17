@@ -123,6 +123,18 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
   return ncclEnqueueCheck(&info);
 }
 
+NCCL_API(ncclResult_t, ncclMixedPrecisionReduceScatter, const void* sendbuff, void* recvbuff, size_t recvcount,
+    ncclDataType_t acctype, ncclDataType_t inputtype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream);
+ncclResult_t ncclMixedPrecisionReduceScatter(const void* sendbuff, void* recvbuff, size_t recvcount,
+    ncclDataType_t acctype, ncclDataType_t inputtype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
+  // For simplicity, don't use the NVTX wrappers for this collective.
+
+  struct ncclInfo info = { ncclFuncMixedPrecisionReduceScatter, "MixedPrecisionReduceScatter",
+    sendbuff, recvbuff, recvcount, acctype, op, 0, comm, stream, /* Args */
+    REDUCESCATTER_CHUNKSTEPS, REDUCESCATTER_SLICESTEPS, inputtype };
+  return ncclEnqueueCheck(&info);
+}
+
 struct NvtxParamsSendRecv {
     size_t bytes;
     int peer;

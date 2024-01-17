@@ -335,6 +335,12 @@ ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
     size_t recvcount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm,
     cudaStream_t stream);
 
+// datatype is the type that is used for communication/reduction
+// inputtype is the type of data in sendbuff/recvbuff
+ncclResult_t ncclMixedPrecisionReduceScatter(const void* sendbuff, void* recvbuff,
+    size_t recvcount, ncclDataType_t acctype, ncclDataType_t inputtype, ncclRedOp_t op, ncclComm_t comm,
+    cudaStream_t stream);
+
 /*
  * All-Gather
  *

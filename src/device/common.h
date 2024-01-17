@@ -79,8 +79,15 @@ struct RunWorkElement {
   }
 };
 
-template<ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto>
-struct RunWork {
+template<ncclFunc_t Fn, typename T, typename TInput, typename RedOp, int Algo, int Proto>
+struct RunWorkElementMixedPrecision {
+  __device__ void run(ncclWorkElem*) {
+    // Put NOT IMPLEMENTED behavior here.
+  }
+};
+
+template<typename Impl>
+struct RunWorkBase {
   // This __forceinline__ is necessary. The compiler was inserting a function call
   // here from the LL ncclKernel.
   __device__ __forceinline__ void run(ncclWork *w) {
@@ -90,10 +97,24 @@ struct RunWork {
     #pragma unroll 1
     while ((char*)we + stride <= (char*)(w+1) && we->isUsed) {
       if (wid < we->nWarps) {
-        RunWorkElement<Fn, T, RedOp, Algo, Proto>().run(we);
+        static_cast<Impl*>(this)->runImpl(we);
       }
       we = (ncclWorkElem*)((char*)we + stride);
     }
+  }
+};
+
+template<ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto>
+struct RunWork: public RunWorkBase<RunWork<Fn, T, RedOp, Algo, Proto>> {
+  __device__ __forceinline__ void runImpl(ncclWorkElem* we) {
+    RunWorkElement<Fn, T, RedOp, Algo, Proto>().run(we);
+  }
+};
+
+template<ncclFunc_t Fn, typename T, typename TInput, typename RedOp, int Algo, int Proto>
+struct RunWorkMixedPrecision: public RunWorkBase<RunWorkMixedPrecision<Fn, T, TInput, RedOp, Algo, Proto>> {
+  __device__ __forceinline__ void runImpl(ncclWorkElem* we) {
+    RunWorkElementMixedPrecision<Fn, T, TInput, RedOp, Algo, Proto>().run(we);
   }
 };
 
@@ -220,6 +241,16 @@ __device__ void ncclDevFunc_Nop();
 #define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto) \
   __device__ void ncclDevFunc_##suffix() { \
     RunWork<coll, ty, redop<ty>, algo, proto>().run(&ncclShmem.work); \
+  }
+
+#define DEFINE_ncclDevKernelMixedPrecision(suffix, coll, redop, ty, inputty, algo, proto, specializedFnId) \
+  __global__ void ncclDevKernel_##suffix(struct ncclDevComm* comm, uint64_t channelMask, struct ncclWork* workHead) { \
+    ncclKernelMain<specializedFnId, RunWorkMixedPrecision<coll, ty, inputty, redop<ty>, algo, proto>>(comm, channelMask, workHead); \
+  }
+
+#define DEFINE_ncclDevFuncMixedPrecision(suffix, coll, redop, ty, inputty, algo, proto) \
+  __device__ void ncclDevFunc_##suffix() { \
+    RunWorkMixedPrecision<coll, ty, inputty, redop<ty>, algo, proto>().run(&ncclShmem.work); \
   }
 
 #endif

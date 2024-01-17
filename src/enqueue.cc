@@ -541,6 +541,7 @@ static ncclResult_t scheduleCollTasksToPlan(
       info.op = (ncclRedOp_t)(int)head->op.op;
       info.chunkSteps = head->chunkSteps;
       info.sliceSteps = head->sliceSteps;
+      info.inputtype = head->inputtype;
       NCCLCHECK(ncclInfoSetDerived(&info, comm->nRanks));
       if (nAggOps > 1) {
         int maxChannels = aggInfo.algorithm == NCCL_ALGO_NVLS || aggInfo.algorithm == NCCL_ALGO_NVLS_TREE ? comm->nvlsChannels : comm->nChannels;
@@ -1279,6 +1280,7 @@ static ncclResult_t getPatternInfo(struct ncclInfo* info) {
       info->pattern = info->algorithm == NCCL_ALGO_TREE ? ncclPatternTreeDown : ncclPatternPipelineFrom; break;
     case ncclFuncReduce:
       info->pattern = info->algorithm == NCCL_ALGO_TREE ? ncclPatternTreeUp : ncclPatternPipelineTo; break;
+    case ncclFuncMixedPrecisionReduceScatter:
     case ncclFuncReduceScatter:
     case ncclFuncAllGather:
       info->pattern =
@@ -1338,7 +1340,11 @@ static ncclResult_t computeColl(struct ncclInfo* info /* input */, int* workFunc
   work->nWarps = info->nThreads / WARP_SIZE;
   work->redOpArg = info->opFull.scalarArg;
   work->redOpArgIsPtr = info->opFull.scalarArgIsPtr;
-  *workFuncIndex = ncclDevFuncId(info->coll, info->opFull.op, info->datatype, info->algorithm, info->protocol);
+  if (info->coll == ncclFuncMixedPrecisionReduceScatter) {
+    NCCLCHECK(ncclDevFuncId_MixedPrecisionReduceScatter(info->opFull.op, info->datatype, info->inputtype, info->algorithm, info->protocol, workFuncIndex));
+  } else {
+    *workFuncIndex = ncclDevFuncId(info->coll, info->opFull.op, info->datatype, info->algorithm, info->protocol);
+  }
 
   int stepSize   = info->comm->buffSizes[info->protocol]/NCCL_STEPS;
   int chunkSteps = (info->protocol == NCCL_PROTO_SIMPLE && info->algorithm == NCCL_ALGO_RING) ? info->chunkSteps : 1;
@@ -1577,6 +1583,7 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo const* inf
       t->op = opFull; // C++ struct assignment
       t->chunkSteps = info->chunkSteps;
       t->sliceSteps = info->sliceSteps;
+      t->inputtype = info->inputtype;
       ncclIntruQueueEnqueue(&tasks->collQueue, t);
       tasks->collBytesTotal += info->nBytes;
       tasks->nTasksColl += 1;

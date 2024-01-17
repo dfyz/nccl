@@ -156,19 +156,21 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
 
   for (int coll=0; coll<NCCL_NUM_FUNCTIONS; coll++) {
     int nsteps = coll == ncclFuncAllReduce ? 2*(nRanks-1) :
-      coll == ncclFuncReduceScatter || coll == ncclFuncAllGather ? nRanks-1 :
+      coll == ncclFuncMixedPrecisionReduceScatter || coll == ncclFuncReduceScatter || coll == ncclFuncAllGather ? nRanks-1 :
       nRanks;
     int nInterSteps = coll == ncclFuncAllReduce ? (nNodes > 1 ? 2*nNodes :0) :
-      coll == ncclFuncReduceScatter || coll == ncclFuncAllGather ? nNodes-1 :
+      coll == ncclFuncMixedPrecisionReduceScatter || coll == ncclFuncReduceScatter || coll == ncclFuncAllGather ? nNodes-1 :
       nNodes;
 
     for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
       if (coll == ncclFuncBroadcast && a != NCCL_ALGO_RING) continue;
       if (coll == ncclFuncReduce && a != NCCL_ALGO_RING) continue;
+      if (coll == ncclFuncMixedPrecisionReduceScatter && a != NCCL_ALGO_RING) continue;
       if (coll == ncclFuncReduceScatter && a != NCCL_ALGO_RING && a != NCCL_ALGO_NVLS) continue;
       if (coll == ncclFuncAllGather && a != NCCL_ALGO_RING && a != NCCL_ALGO_NVLS) continue;
 
       for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+        if (coll == ncclFuncMixedPrecisionReduceScatter && p != NCCL_PROTO_SIMPLE) continue;
         if ((a == NCCL_ALGO_NVLS || a == NCCL_ALGO_NVLS_TREE) && p != NCCL_PROTO_SIMPLE) continue;
         int collnet = (a == NCCL_ALGO_COLLNET_DIRECT || a == NCCL_ALGO_COLLNET_CHAIN) ? 1 : 0;
         float bw = nNodes <= 2 || collnet ? graphs[a]->bwIntra : graphs[a]->bwInter;
