@@ -204,6 +204,7 @@ private:
                        RoleWaitSend = 0x08,
                        RolePostSend = 0x10,
                        RolePostRecv = 0x20,
+                       Aborted = 0x40,
                        OffsFifoEnabled = 0x80,
                        SizesFifoEnabled = 0x100,
                        ThreadsSynced = 0x800;
@@ -235,7 +236,8 @@ public:
         waitPeer<Send, Recv>(sliceSize);
         subBarrier();
 
-        // For simplicity, don't track aborts here.
+        // `prims_simple.h` tries to avoid doing unnecessary reduceCopy() if we are already aborted,
+        // but we don't really mind doing some extra work.
         auto& group = ncclShmem.groups[0];
         reduceCopyMixedPrecision<
           ncclCollUnroll(), RedOp, T, TInput,
@@ -340,9 +342,21 @@ private:
   __device__ __forceinline__ void waitPeer(int nelts) {
     const bool isSendNotRecv = (Send && Recv) ? (flags & RoleWaitSend) : Send;
     if (flags & (Recv * RoleWaitRecv | Send * RoleWaitSend)) {
+      int spins = 0;
       while (connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) < step + StepPerSlice) {
-        // For simplicity, don't track aborts here.
         connStepCache = ld_volatile_global(connStepPtr);
+        // Check for kernel abort.
+        spins++;
+        if (!(flags & Aborted) && spins == NCCL_SPINS_BEFORE_CHECK_ABORT) {
+          if (*ncclShmem.comm.abortFlag) {
+            flags |= Aborted;
+            ncclShmem.aborted = 1;
+          }
+          spins = 0;
+        }
+        if (flags & Aborted) {
+          break;
+        }
       }
 
       if (isSendNotRecv && (flags & SizesFifoEnabled)) {

@@ -1,5 +1,6 @@
 // nvcc -O2 -I /usr/local/mpi/include -I ~/nccl/build/include -L /usr/local/mpi/lib -L ~/nccl/build/lib -gencode=arch=compute_80,code=sm_80 -o test_rs test_rs.cu -lnccl -lmpi
 #include <iostream>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -47,7 +48,7 @@ constexpr size_t WARMUP_ITERS = 10;
 constexpr size_t ITERS = 100;
 
 std::vector<__nv_bfloat16> DoReduceScatter(__nv_bfloat16* sendbuff, size_t elemCount, size_t recvCount, ncclComm_t comm, cudaStream_t stream,
-                                           ReduceScatterMode mode, int rank, float* elapsedMs) {
+                                           ReduceScatterMode mode, int rank, float* elapsedMs, std::optional<ReduceScatterMode> abortMode) {
     __nv_bfloat16* recvbuff = sendbuff + rank * recvCount;
     float* tmpbuff = {};
 
@@ -91,6 +92,12 @@ std::vector<__nv_bfloat16> DoReduceScatter(__nv_bfloat16* sendbuff, size_t elemC
 
         Convert<float, __nv_bfloat16><<<nBlocks, N_THREADS, 0, stream>>>(tmpbuff, sendbuff, elemCount);
         CudaOrDie(cudaGetLastError(), "fp32 -> bf16 conversion");
+    }
+
+    if (abortMode.has_value() && mode == *abortMode) {
+        NcclOrDie(ncclCommAbort(comm), "abort NCCL communicator");
+        std::cerr << "Aborted NCCL communicator on rank " << rank << std::endl;
+        exit(42);
     }
 
     CudaOrDie(cudaStreamSynchronize(stream), "synchronize GPU");
@@ -161,6 +168,11 @@ int main(int argc, char** argv) {
     CudaOrDie(cudaStreamCreate(&stream), "create GPU stream");
     CudaOrDie(cudaMalloc(&sendbuff, elemCount * sizeof(__nv_bfloat16)), "allocate GPU buffer");
 
+    std::optional<ReduceScatterMode> abortMode;
+    if (const auto* abortModeEnv = getenv("ABORT_MODE")) {
+        abortMode = static_cast<ReduceScatterMode>(std::stoi(abortModeEnv));
+    }
+
     for (size_t rawMode = 0; rawMode < static_cast<size_t>(ReduceScatterMode::ModeCount); ++rawMode) {
         const auto mode = static_cast<ReduceScatterMode>(rawMode);
 
@@ -173,7 +185,7 @@ int main(int argc, char** argv) {
                 cudaMemcpy(sendbuff, gradients.data(), elemCount * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice),
                 "copy to GPU"
             );
-            const auto result = DoReduceScatter(sendbuff, elemCount, recvCount, comm, stream, mode, rank, &elapsedMs);
+            const auto result = DoReduceScatter(sendbuff, elemCount, recvCount, comm, stream, mode, rank, &elapsedMs, abortMode);
 
             if (iter < WARMUP_ITERS) {
                 continue;
