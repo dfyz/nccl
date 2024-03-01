@@ -444,6 +444,15 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   comm->workFifoAckdMin = 0;
 
   for (int c=0; c < MAXCHANNELS; c++) {
+    if (c < MAXTIMINGSCHANNELS) {
+      NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->stepTimings[c], 1 + MAXSTEPTIMINGS*TIMINGS_COUNT), ret, fail);
+      ncclCommPushCudaHostFree(comm, comm->stepTimings[c]);
+    } else {
+      comm->stepTimings[c] = nullptr;
+    }
+  }
+
+  for (int c=0; c < MAXCHANNELS; c++) {
     tmpCommAndChans.channels[c].peers = comm->channels[c].devPeers;
     tmpCommAndChans.channels[c].ring = comm->channels[c].ring;
     tmpCommAndChans.channels[c].ring.userRanks = comm->channels[c].devRingUserRanks;
@@ -452,6 +461,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
     tmpCommAndChans.channels[c].collnetDirect = comm->channels[c].collnetDirect;
     tmpCommAndChans.channels[c].nvls = comm->channels[c].nvls;
     tmpCommAndChans.channels[c].workFifoDone = &comm->workFifoDone[c];
+    tmpCommAndChans.channels[c].stepTimings = comm->stepTimings[c];
 
     if (comm->channels[c].ring.userRanks != nullptr) {
       NCCLCHECKGOTO(ncclCudaMemcpyAsync(tmpCommAndChans.channels[c].ring.userRanks, comm->channels[c].ring.userRanks, nRanks, comm->sharedRes->deviceStream.cudaStream), ret, fail);

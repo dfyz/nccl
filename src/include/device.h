@@ -52,6 +52,9 @@ union ncclLLFifoLine {
 
 #define WARP_SIZE 32
 #define MAXCHANNELS 32
+#define MAXTIMINGSCHANNELS 8 // we only use 8 channels max in real kernels
+#define MAXSTEPTIMINGS 16384 // 16K steps per channel should be enough for everyone
+#define TIMINGS_COUNT 8 // per channel per slice: [stepRecv, stepSend, size, waitRecvTs, waitSendTs, postRecvTs, postSendTs, postSendBeforeBarrierTs]
 #define NCCL_MAX_NTHREADS 640
 #define NCCL_SIMPLE_MAX_NTHREADS 512
 #define NCCL_LL_MAX_NTHREADS 512
@@ -291,6 +294,7 @@ struct alignas(16) ncclDevChannel {
   struct ncclDirect collnetDirect;
   struct ncclNvls nvls;
   uint32_t* workFifoDone; // Location of done counter, device writes index+1 of last work processed
+  uint64_t* stepTimings;
 };
 
 struct ncclDevComm {

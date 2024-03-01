@@ -12,6 +12,12 @@
 #include "op128.h"
 #include "network/unpack/unpack_defs.h"
 
+#include <cuda/std/chrono>
+
+__device__ __forceinline__ uint64_t getDeviceTimeNs() {
+  return cuda::std::chrono::high_resolution_clock::now().time_since_epoch().count();
+}
+
 #define COLL_UNROLL (ncclCollUnroll())
 
 typedef void(*ncclDevFuncPtr_t)();
@@ -38,6 +44,8 @@ struct ncclShmemData {
   alignas(16) union {
     unpackShmem unpack;
   } devicePlugin;
+  alignas(16) uint64_t startTiming;
+  alignas(16) int kernelType;
 };
 static_assert(offsetof(struct ncclShmemData, work)%16 == 0, "shmem.work needs to be 16B aligned");
 
@@ -162,7 +170,11 @@ __device__ void ncclKernelMain(struct ncclDevComm* comm, uint64_t channelMask, s
   __syncthreads(); // publish ncclShmem.channelId
   int channelId = ncclShmem.channelId;
   /* set abort flag to 0 */
-  if (tid == 0) ncclShmem.aborted = 0;
+  if (tid == 0) {
+    ncclShmem.aborted = 0;
+    ncclShmem.startTiming = getDeviceTimeNs();
+    ncclShmem.kernelType = 0;
+  }
 
   if (true) {
     void *dst, *src;

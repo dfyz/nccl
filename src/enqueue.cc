@@ -15,6 +15,12 @@
 
 #include <cstring> // std::memcpy
 #include <cinttypes> // PRIx64
+#include <iostream>
+
+#include <mutex>
+#include <vector>
+
+#include <cstdio>
 
 enum ncclRegBufferType {
   NCCL_REGULAR_BUFFER = 0,
@@ -1040,6 +1046,113 @@ ncclResult_t ncclLaunchKernelBefore_NoUncapturedCuda(struct ncclComm* comm, stru
 NCCL_PARAM(MemSyncDomain, "MEM_SYNC_DOMAIN", cudaLaunchMemSyncDomainRemote);
 #endif
 
+std::mutex timingsMutex;
+bool saveTimings;
+std::vector<uint64_t> stepTimings[MAXTIMINGSCHANNELS];
+
+NCCL_API(void, ncclAppendTimingsToJson, const char*);
+void ncclAppendTimingsToJson(const char* fileName) {
+  std::lock_guard gg(timingsMutex);
+
+  FILE* outFile = fopen(fileName, "r+");
+  if (outFile == nullptr) {
+    fprintf(stderr, "Failed to open %s for appending\n", fileName);
+    abort();
+  }
+
+  char* line = nullptr;
+  size_t lineN = 0;
+  ssize_t nread = {};
+  bool appended = false;
+  while ((nread = getline(&line, &lineN, outFile)) != -1) {
+    if (strcmp(line, "}") == 0) {
+      fseek(outFile, -1, SEEK_CUR);
+      // Outermost array
+      fprintf(outFile, ", \"ncclTimings\": [");
+      for (size_t cc = 0; cc < MAXTIMINGSCHANNELS; ++cc) {
+        if (cc > 0) {
+          fprintf(outFile, ",");
+        }
+        // Timings for a single channel
+        fprintf(outFile, "[");
+        size_t ii = 0;
+        while (ii < stepTimings[cc].size()) {
+          // Timings for a single kernel
+          if (ii > 0) {
+            fprintf(outFile, ",");
+          }
+          fprintf(outFile, "[");
+          uint64_t countWithKernelType = stepTimings[cc][ii];
+          uint64_t count = countWithKernelType & (0xFF'FF'FF'FFULL);
+          uint64_t kernelType = countWithKernelType >> 32;
+          switch (kernelType) {
+          case 1:
+            fprintf(outFile, "\"ag\"");
+            break;
+          case 2:
+            fprintf(outFile, "\"rs\"");
+            break;
+          default:
+            fprintf(stderr, "Unknown kernel type %lu\n", kernelType);
+            abort();
+          }
+          for (size_t delta = 1; delta <= count - 1; ++delta) {
+            fprintf(outFile, ",");
+            fprintf(outFile, "%lu", stepTimings[cc][ii + delta]);
+          }
+          ii += count;
+          fprintf(outFile, "]");
+        }
+        fprintf(outFile, "]");
+      }
+      fprintf(outFile, "]");
+      fprintf(outFile, "\n}");
+      appended = true;
+    }
+  }
+  free(line);
+  fclose(outFile);
+
+  if (!appended) {
+    fprintf(stderr, "Warning: failed to append timings to %s\n", fileName);
+  }
+}
+
+NCCL_API(void, ncclSetSaveTimingsState, bool);
+void ncclSetSaveTimingsState(bool enabled) {
+  std::lock_guard gg(timingsMutex);
+
+  if (enabled) {
+    for (size_t cc = 0; cc < MAXTIMINGSCHANNELS; ++cc) {
+      // Start with 32 MiB per channel, which is enough for ~400 collectives for 1312 GPUs.
+      stepTimings[cc].reserve(32 * 1024 * 1024);
+    }
+
+    saveTimings = true;
+  } else {
+    saveTimings = false;
+  }
+}
+
+void onKernelFinished(void* rawComm) {
+  std::lock_guard gg(timingsMutex);
+
+  if (!saveTimings) {
+    return;
+  }
+
+  struct ncclComm* comm = (struct ncclComm*)rawComm;
+
+  for (size_t cc = 0; cc < MAXTIMINGSCHANNELS; ++cc) {
+    uint64_t countWithKernelType = comm->stepTimings[cc][0];
+    if (countWithKernelType > 0) {
+      uint64_t count = countWithKernelType & (0xFF'FF'FF'FFULL);
+      stepTimings[cc].insert(stepTimings[cc].end(), comm->stepTimings[cc], comm->stepTimings[cc] + count);
+      comm->stepTimings[cc][0] = 0;
+    }
+  }
+}
+
 ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan) {
   struct ncclTasks* tasks = &comm->tasks;
   void *fn = plan->kernelFn;
@@ -1092,6 +1205,7 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
     launchConfig.stream = launchStream;
 
     CUDACHECK(cudaLaunchKernelExC(&launchConfig, fn, args));
+    CUDACHECK(cudaLaunchHostFunc(launchStream, onKernelFinished, comm));
     return ncclSuccess;
   }
   #endif

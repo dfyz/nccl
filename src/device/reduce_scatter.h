@@ -12,6 +12,12 @@ namespace {
   template<typename T, typename RedOp, typename Proto>
   __device__ __forceinline__ void runRing(ncclWorkElem *args) {
     const int tid = threadIdx.x;
+
+    if (tid == 0) {
+      ncclShmem.kernelType = 2;
+    }
+    __syncthreads();
+
     const int nthreads = args->nWarps*WARP_SIZE;
     const int bid = args->bid;
     const int nChannels = args->nChannels;

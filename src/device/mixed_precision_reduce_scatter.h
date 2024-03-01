@@ -252,6 +252,9 @@ public:
         postPeer<Send, Recv>(sliceSize > 0);
         offset += sliceSize;
         ++slice;
+        if (shouldSaveTimings()) {
+          timingIndex += TIMINGS_COUNT;
+        }
       } while (slice < SlicePerChunk && offset < nelem);
     }
 
@@ -265,6 +268,9 @@ public:
       postPeer<Send, Recv>(sliceSize > 0);
       offset += sliceSize;
       ++slice;
+      if (shouldSaveTimings()) {
+        timingIndex += TIMINGS_COUNT;
+      }
     }
   }
 
@@ -282,6 +288,7 @@ public:
     , stepSize(stepSize)
     , nranks(nranks)
     , size(size)
+    , timingIndex(-1)
   {
     constexpr int ThreadsPerSync = 8;
 
@@ -291,16 +298,20 @@ public:
     // Preserve the indexes from `prims_simple.h` for simplicity
     if (tid == 0) {
       flags |= RoleWaitRecv;
+      timingIndex = 1;
     } else if (tid == 1) {
       flags |= RoleInput;
     } else if (tid == ThreadsPerSync) {
       flags |= RoleWaitSend;
+      timingIndex = 1;
     } else if (tid == ThreadsPerSync + 1) {
       flags |= RoleOutput;
     } else if (tid == nthreads - 2 * ThreadsPerSync) {
       flags |= RolePostRecv;
+      timingIndex = 1;
     } else if (tid == nthreads - ThreadsPerSync) {
       flags |= RolePostSend;
+      timingIndex = 1;
     }
 
     loadConn(ring->prev, RolePostRecv, RoleWaitRecv, true /*isRecv*/);
@@ -323,12 +334,19 @@ public:
     if (flags & (RolePostSend | RolePostRecv)) {
       auto& group = ncclShmem.groups[0];
       ((flags & RolePostSend) ? group.sendConns : group.recvConns)[0]->step = step;
+      if (flags & RolePostSend && shouldSaveTimings()) {
+        ncclShmem.channel.stepTimings[0] = (2ULL << 32) | min(timingIndex, 1 + MAXSTEPTIMINGS*TIMINGS_COUNT);
+      }
     }
 
     barrier();
   }
 
 private:
+  __forceinline__ __device__ bool shouldSaveTimings() {
+    return ncclShmem.channel.stepTimings != nullptr && timingIndex != -1;
+  }
+
   __device__ void barrier() {
     flags |= ThreadsSynced;
     asm volatile("bar.sync %0, %1;" :: "r"(15), "r"(nthreads) : "memory");
@@ -359,6 +377,15 @@ private:
         }
       }
 
+      if (shouldSaveTimings() && timingIndex <= MAXSTEPTIMINGS*TIMINGS_COUNT) {
+        const int isSend = (flags & RoleWaitSend) != 0;
+        ncclShmem.channel.stepTimings[timingIndex + isSend] = step;
+        if ((Recv && !Send) ? (flags & RoleWaitRecv) : (flags & RoleWaitSend)) {
+          ncclShmem.channel.stepTimings[timingIndex + 2] = nelts*sizeof(T);
+        }
+        ncclShmem.channel.stepTimings[timingIndex + isSend + 3] = getDeviceTimeNs() - ncclShmem.startTiming;
+      }
+
       if (isSendNotRecv && (flags & SizesFifoEnabled)) {
         connSizesFifoPtr[step % NCCL_STEPS] = nelts * sizeof(T);
       }
@@ -382,11 +409,18 @@ private:
   template <int Send, int Recv>
   __device__ void postPeer(bool dataStored) {
     if (flags & (Recv * RolePostRecv | Send * RolePostSend)) {
+      const int isSend = (flags & RolePostSend) != 0;
+      if (shouldSaveTimings() && timingIndex <= MAXSTEPTIMINGS*TIMINGS_COUNT && isSend) {
+        ncclShmem.channel.stepTimings[timingIndex + 7] = getDeviceTimeNs() - ncclShmem.startTiming;
+      }
       step += StepPerSlice;
       if (Send && (flags & RolePostSend) && dataStored) {
         fence_acq_rel_sys();
       }
       st_relaxed_sys_global(connStepPtr, step);
+      if (shouldSaveTimings() && timingIndex <= MAXSTEPTIMINGS*TIMINGS_COUNT) {
+        ncclShmem.channel.stepTimings[timingIndex + isSend + 5] = getDeviceTimeNs() - ncclShmem.startTiming;
+      }
     }
   }
 
@@ -452,6 +486,8 @@ private:
   int volatile *connSizesFifoPtr;
   uint64_t *connStepPtr;
   uint64_t connStepCache;
+
+  int timingIndex;
 };
 
 

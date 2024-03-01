@@ -387,6 +387,8 @@ struct ncclComm {
 
   // Tuning plugin
   ncclTuner_t* tuner;
+
+  uint64_t* stepTimings[MAXCHANNELS];
 };
 
 enum ncclLaunchMode {
