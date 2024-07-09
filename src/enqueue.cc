@@ -16,6 +16,8 @@
 #include <cstring> // std::memcpy
 #include <cinttypes> // PRIx64
 
+#include <cmath>
+
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 
 // Returns maximum kernel stack size of all CUDA kernels
@@ -1384,6 +1386,32 @@ ncclResult_t ncclLaunchKernelBefore_NoUncapturedCuda(struct ncclComm* comm, stru
 NCCL_PARAM(MemSyncDomain, "MEM_SYNC_DOMAIN", cudaLaunchMemSyncDomainRemote);
 #endif
 
+void bumpKernelCounter(void* rawComm) {
+  struct ncclComm* comm = (struct ncclComm*)rawComm;
+  ++comm->blockTimings[0];
+
+  if (comm->blockTimings[0] == 30 && comm->rank == 0) {
+    FILE* f = fopen("nccl_timings.json", "w");
+    fprintf(f, "{\"traceEvents\":[\n");
+
+    for (size_t kIdx = 0; kIdx < 30; ++kIdx) {
+      for (size_t chIdx = 0; chIdx < 8; ++chIdx) {
+        uint64_t start = comm->blockTimings[1 + kIdx * 8 * 2 + chIdx * 2 + 0];
+        uint64_t end = comm->blockTimings[1 + kIdx * 8 * 2 + chIdx * 2 + 1];
+
+        fprintf(
+          f,
+          "{\"ph\": \"X\", \"name\": \"AllGather #%zu, block #%zu\", \"ts\": %lu, \"dur\": %lu},\n",
+          kIdx, chIdx, static_cast<uint64_t>(std::round(start / 1000.0)), static_cast<uint64_t>(std::round((end - start) / 1000.0))
+        );
+      }
+    }
+
+    fprintf(f, "{}]}\n");
+    fclose(f);
+  }
+}
+
 ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan) {
   struct ncclKernelPlanner* planner = &comm->planner;
   int nChannels = countOneBits(plan->channelMask);
@@ -1449,6 +1477,7 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
 
     //CUDACHECK(cudaLaunchKernelExC(&launchConfig, fnAddr, args));
     CUCHECK(cuLaunchKernelEx(&launchConfig, fn, nullptr, extra));
+    CUDACHECK(cudaLaunchHostFunc(launchStream, bumpKernelCounter, comm));
     return ncclSuccess;
   }
   #endif

@@ -395,6 +395,8 @@ struct ncclDevComm {
 
   // Channels, device side
   struct ncclDevChannel* channels/*[MAXCHANNELS]*/;
+
+  uint64_t* blockTimings;
 };
 
 struct alignas(16) ncclDevCommAndChannels {

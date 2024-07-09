@@ -556,6 +556,8 @@ struct ncclComm {
   // buffer registration cache
   struct ncclRegCache regCache;
   uint64_t endMagic;
+
+  uint64_t* blockTimings;
 };
 
 enum ncclLaunchMode {

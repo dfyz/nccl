@@ -8,9 +8,20 @@
 #include "collectives.h"
 #include "primitives.h"
 
+#include <cuda/std/chrono>
+
+__device__ __forceinline__ uint64_t getDeviceTimeNs() {
+  return cuda::std::chrono::high_resolution_clock::now().time_since_epoch().count();
+}
+
 namespace {
   template<typename T, typename RedOp, typename Proto>
   __device__ __forceinline__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
+    uint64_t kernelIdx = ncclShmem.comm.blockTimings[0];
+    if (threadIdx.x == 0) {
+      ncclShmem.comm.blockTimings[1 + kernelIdx * 8 * 2 + blockIdx.x * 2 + 0] = getDeviceTimeNs();
+    }
+
     ncclRing *ring = &ncclShmem.channel.ring;
     const int *ringRanks = ring->userRanks;
     const int nranks = ncclShmem.comm.nRanks;
@@ -55,6 +66,10 @@ namespace {
 
       // Final wait/copy.
       prims.directRecv(offset, nelem);
+    }
+
+    if (threadIdx.x == 0) {
+      ncclShmem.comm.blockTimings[1 + kernelIdx * 8 * 2 + blockIdx.x * 2 + 1] = getDeviceTimeNs();
     }
   }
 }

@@ -459,6 +459,9 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   comm->workFifoConsumedLeast = 0;
   tmpCommAndChans.comm.workConsumed = comm->workFifoConsumed;
 
+  NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->blockTimings, 1 + 30 * 8 * 2), ret, fail); // counter + num_kernels * num_channels * start/stop
+  tmpCommAndChans.comm.blockTimings = comm->blockTimings;
+
   if (comm->collNetDenseToUserRank != nullptr) {
     NCCLCHECKGOTO(ncclCudaCallocAsync(&tmpCommAndChans.comm.collNetDenseToUserRank, nRanks, comm->sharedRes->deviceStream.cudaStream), ret, fail);
     ncclCommPushCudaFree(comm, tmpCommAndChans.comm.collNetDenseToUserRank);
